@@ -392,6 +392,7 @@ func createFsFromImage(imageRef string) (string, error) {
 		{"Mounting image", "🔌", func() error { return mountImage(ctx) }},
 		{"Copying files to image", "📋", func() error { return copyRootfsToImage(ctx) }},
 		{"Unmounting image", "🔌", func() error { return unmountImage(ctx) }},
+		{"Shrinking to optimal size", "📦", func() error { return shrinkFilesystem(ctx) }},
 	}
 
 	if dualOutput {
@@ -459,7 +460,7 @@ func createFsFromImage(imageRef string) (string, error) {
 }
 
 func checkPrerequisites(fs string, checkSquashfs bool) error {
-	tools := []string{"skopeo", "umoci", "mount", "umount", "dd", "du", "cp", "mkfs." + fs}
+	tools := []string{"skopeo", "umoci", "mount", "umount", "dd", "du", "cp", "mkfs." + fs, "e2fsck", "resize2fs", "dumpe2fs"}
 	if checkSquashfs {
 		tools = append(tools, "mksquashfs")
 	}
@@ -520,18 +521,8 @@ func createImageFile(ctx *ConversionContext) error {
 		return fmt.Errorf("failed to parse size %q: %w", parts[0], err)
 	}
 
-	// Auto-adjust buffer size for large images (>1GB) if using default buffer
+	// Use a generous buffer - we'll shrink to optimal size later
 	bufferKB := ctx.BufferSize * 1024
-	const defaultBufferMB = 50
-	const largeImageThresholdKB = 1048576 // 1GB in KB
-	const largeImageBufferMB = 100        // 100MB buffer for large images
-	
-	if ctx.BufferSize == defaultBufferMB && sizeKB > largeImageThresholdKB {
-		bufferKB = largeImageBufferMB * 1024
-		if ctx.Verbose {
-			fmt.Printf("%s Image size >1GB detected, auto-increasing buffer to %dMB\n", colorize("│", "yellow", ctx.NoColor), largeImageBufferMB)
-		}
-	}
 	totalSizeKB := sizeKB + bufferKB
 	totalSizeBytes := totalSizeKB * 1024
 
@@ -751,6 +742,58 @@ func extractOciConfig(ctx *ConversionContext) error {
 
 func createSquashfsImage(ctx *ConversionContext) error {
 	return ctx.runCommand("mksquashfs", ctx.UnpackedPath, ctx.SquashfsPath, "-noappend")
+}
+
+func shrinkFilesystem(ctx *ConversionContext) error {
+	// Run e2fsck first (required before resize2fs)
+	if err := ctx.runCommand("e2fsck", "-f", "-y", ctx.ImagePath); err != nil {
+		// e2fsck may return non-zero even on success, check if it's a fatal error
+		if ctx.Verbose {
+			fmt.Printf("%s e2fsck completed (exit code ignored)\n", colorize("│", "cyan", ctx.NoColor))
+		}
+	}
+
+	// Shrink the filesystem to minimum size
+	if err := ctx.runCommand("resize2fs", "-M", ctx.ImagePath); err != nil {
+		return fmt.Errorf("failed to shrink filesystem: %w", err)
+	}
+
+	// Get the new filesystem size
+	cmd := exec.Command("dumpe2fs", "-h", ctx.ImagePath)
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to get filesystem info: %w", err)
+	}
+
+	// Parse block count and block size
+	var blockCount, blockSize int64
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "Block count:") {
+			fmt.Sscanf(line, "Block count: %d", &blockCount)
+		} else if strings.HasPrefix(line, "Block size:") {
+			fmt.Sscanf(line, "Block size: %d", &blockSize)
+		}
+	}
+
+	if blockCount == 0 || blockSize == 0 {
+		return fmt.Errorf("failed to parse filesystem size from dumpe2fs")
+	}
+
+	// Calculate actual filesystem size in bytes
+	fsSize := blockCount * blockSize
+
+	// Truncate the image file to match the filesystem size
+	if err := os.Truncate(ctx.ImagePath, fsSize); err != nil {
+		return fmt.Errorf("failed to truncate image file: %w", err)
+	}
+
+	if ctx.Verbose {
+		sizeMB := float64(fsSize) / (1024 * 1024)
+		fmt.Printf("%s Shrunk image to %.2f MB\n", colorize("│", "green", ctx.NoColor), sizeMB)
+	}
+
+	return nil
 }
 
 func unmountImage(ctx *ConversionContext) error {
