@@ -1,0 +1,207 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+env:
+  GO_VERSION: '1.21'
+
+jobs:
+  build:
+    name: Build Binary
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            suffix: ''
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            suffix: '-arm64'
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            suffix: '-darwin-amd64'
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            suffix: '-darwin-arm64'
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            suffix: '.exe'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          if [[ $VERSION == refs/heads/* ]]; then
+            VERSION=${{ github.event.inputs.version }}
+          fi
+          if [[ -z "$VERSION" || "$VERSION" == "refs/heads/main" ]]; then
+            VERSION="dev-$(git rev-parse --short HEAD)"
+          fi
+
+          BINARY_NAME="fsify${{ matrix.suffix }}"
+          LDFLAGS="-X main.Version=$VERSION -X main.BuildDate=$(date -u +%Y-%m-%d) -s -w"
+
+          mkdir -p dist
+          go build -ldflags "$LDFLAGS" -o "dist/$BINARY_NAME" main.go
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fsify-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/
+          retention-days: 30
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          cd artifacts
+          for dir in */; do
+            cd "$dir"
+            for file in *; do
+              if [[ -f "$file" ]]; then
+                mv "$file" "../../release/$(basename "$dir")-$file"
+              fi
+            done
+            cd ..
+          done
+          cd ..
+          ls -la release/
+
+      - name: Generate checksums
+        run: |
+          cd release
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: fsify ${{ github.ref_name || github.event.inputs.version }}
+          body: |
+            ## fsify ${{ github.ref_name || github.event.inputs.version }}
+
+            Convert Docker images to bootable filesystem images.
+
+            ### Installation
+
+            Download the appropriate binary for your platform:
+
+            **Linux:**
+            - `fsify-linux-amd64` - x86_64 Linux
+            - `fsify-linux-arm64` - ARM64 Linux
+
+            **macOS:**
+            - `fsify-darwin-amd64` - Intel Mac
+            - `fsify-darwin-arm64` - Apple Silicon Mac
+
+            **Windows:**
+            - `fsify-windows-amd64.exe` - x86_64 Windows
+
+            ### Quick Start
+
+            ```bash
+            # Make binary executable (Linux/macOS)
+            chmod +x fsify-*
+
+            # Move to system path
+            sudo mv fsify-* /usr/local/bin/fsify
+
+            # Run fsify
+            fsify nginx:latest
+            ```
+
+            ### Verification
+
+            Verify the integrity of downloaded files using the provided checksums:
+
+            ```bash
+            sha256sum -c checksums.txt
+            ```
+          files: |
+            release/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  test:
+    name: Test Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: go test -v ./...
+
+      - name: Build test binary
+        run: go build -o fsify-test main.go
+
+      - name: Test binary execution
+        run: |
+          ./fsify-test --version
+          ./fsify-test --help
