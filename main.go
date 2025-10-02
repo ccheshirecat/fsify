@@ -520,7 +520,18 @@ func createImageFile(ctx *ConversionContext) error {
 		return fmt.Errorf("failed to parse size %q: %w", parts[0], err)
 	}
 
+	// Auto-adjust buffer size for large images (>1GB) if using default buffer
 	bufferKB := ctx.BufferSize * 1024
+	const defaultBufferMB = 50
+	const largeImageThresholdKB = 1048576 // 1GB in KB
+	const largeImageBufferMB = 100        // 100MB buffer for large images
+	
+	if ctx.BufferSize == defaultBufferMB && sizeKB > largeImageThresholdKB {
+		bufferKB = largeImageBufferMB * 1024
+		if ctx.Verbose {
+			fmt.Printf("%s Image size >1GB detected, auto-increasing buffer to %dMB\n", colorize("│", "yellow", ctx.NoColor), largeImageBufferMB)
+		}
+	}
 	totalSizeKB := sizeKB + bufferKB
 	totalSizeBytes := totalSizeKB * 1024
 
