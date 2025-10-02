@@ -29,18 +29,6 @@ jobs:
             goos: linux
             goarch: arm64
             suffix: '-arm64'
-          - os: macos-latest
-            goos: darwin
-            goarch: amd64
-            suffix: '-darwin-amd64'
-          - os: macos-latest
-            goos: darwin
-            goarch: arm64
-            suffix: '-darwin-arm64'
-          - os: windows-latest
-            goos: windows
-            goarch: amd64
-            suffix: '.exe'
 
     steps:
       - name: Checkout code
@@ -144,24 +132,26 @@ jobs:
             - `fsify-linux-amd64` - x86_64 Linux
             - `fsify-linux-arm64` - ARM64 Linux
 
-            **macOS:**
-            - `fsify-darwin-amd64` - Intel Mac
-            - `fsify-darwin-arm64` - Apple Silicon Mac
+            ### Requirements
 
-            **Windows:**
-            - `fsify-windows-amd64.exe` - x86_64 Windows
+            - Linux system with root privileges
+            - Go 1.19+
+            - skopeo (for pulling OCI images)
+            - umoci (for unpacking OCI images)
+            - Core utilities (dd, du, cp, fallocate)
+            - Filesystem utilities (mkfs.<type>, mount, umount)
 
             ### Quick Start
 
             ```bash
-            # Make binary executable (Linux/macOS)
+            # Make binary executable
             chmod +x fsify-*
 
             # Move to system path
             sudo mv fsify-* /usr/local/bin/fsify
 
-            # Run fsify
-            fsify nginx:latest
+            # Run fsify (requires root)
+            sudo fsify nginx:latest
             ```
 
             ### Verification
