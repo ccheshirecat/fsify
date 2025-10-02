@@ -485,6 +485,19 @@ func suggestPrerequisiteInstallation() {
 }
 
 func downloadOciImage(ctx *ConversionContext) error {
+	// Try local Docker daemon first
+	localErr := ctx.runCommand("skopeo", "copy", fmt.Sprintf("docker-daemon:%s", ctx.ImageRef), fmt.Sprintf("oci:%s:latest", ctx.OciLayoutPath))
+	if localErr == nil {
+		if ctx.Verbose {
+			fmt.Printf("%s Successfully copied from local Docker daemon\n", colorize("│", "cyan", ctx.NoColor))
+		}
+		return nil
+	}
+
+	// If local copy fails, try remote registry
+	if ctx.Verbose {
+		fmt.Printf("%s Local Docker daemon copy failed, trying remote registry...\n", colorize("│", "yellow", ctx.NoColor))
+	}
 	return ctx.runCommand("skopeo", "copy", fmt.Sprintf("docker://%s", ctx.ImageRef), fmt.Sprintf("oci:%s:latest", ctx.OciLayoutPath))
 }
 
