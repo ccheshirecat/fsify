@@ -485,6 +485,19 @@ func suggestPrerequisiteInstallation() {
 }
 
 func downloadOciImage(ctx *ConversionContext) error {
+	// Try local Docker daemon first
+	localErr := ctx.runCommand("skopeo", "copy", fmt.Sprintf("docker-daemon:%s", ctx.ImageRef), fmt.Sprintf("oci:%s:latest", ctx.OciLayoutPath))
+	if localErr == nil {
+		if ctx.Verbose {
+			fmt.Printf("%s Successfully copied from local Docker daemon\n", colorize("│", "cyan", ctx.NoColor))
+		}
+		return nil
+	}
+
+	// If local copy fails, try remote registry
+	if ctx.Verbose {
+		fmt.Printf("%s Local Docker daemon copy failed, trying remote registry...\n", colorize("│", "yellow", ctx.NoColor))
+	}
 	return ctx.runCommand("skopeo", "copy", fmt.Sprintf("docker://%s", ctx.ImageRef), fmt.Sprintf("oci:%s:latest", ctx.OciLayoutPath))
 }
 
@@ -507,7 +520,18 @@ func createImageFile(ctx *ConversionContext) error {
 		return fmt.Errorf("failed to parse size %q: %w", parts[0], err)
 	}
 
+	// Auto-adjust buffer size for large images (>1GB) if using default buffer
 	bufferKB := ctx.BufferSize * 1024
+	const defaultBufferMB = 50
+	const largeImageThresholdKB = 1048576 // 1GB in KB
+	const largeImageBufferMB = 100        // 100MB buffer for large images
+	
+	if ctx.BufferSize == defaultBufferMB && sizeKB > largeImageThresholdKB {
+		bufferKB = largeImageBufferMB * 1024
+		if ctx.Verbose {
+			fmt.Printf("%s Image size >1GB detected, auto-increasing buffer to %dMB\n", colorize("│", "yellow", ctx.NoColor), largeImageBufferMB)
+		}
+	}
 	totalSizeKB := sizeKB + bufferKB
 	totalSizeBytes := totalSizeKB * 1024
 
